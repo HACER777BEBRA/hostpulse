@@ -1,17 +1,76 @@
 # HostPulse
 
-Telegram-бот мониторинга Linux-сервера: CPU, RAM, диск, load, сеть, systemd и Docker. Периодические отчёты, алерты по порогам и уведомление о ребуте.
+Пульс Linux-хоста в Telegram.
 
-## Установка
+Когда сервер живёт сам по себе, хочется знать о проблемах раньше, чем пользователи. HostPulse следит за машиной и пишет в чат: метрики, падения сервисов и контейнеров, алерты по порогам и факт ребута.
 
-Готовые бинарники (linux amd64/arm64) и примеры конфигов: [Releases](https://github.com/HACER777BEBRA/hostpulse/releases). Go на сервере не нужен.
+## Возможности
+
+- **Метрики** — CPU, RAM, диск, load average, топ процессов
+- **Сеть** — скорость ↓↑ сейчас и за окна 1 мин / 15 мин / 1 час
+- **systemd** — статусы юнитов из вашего списка
+- **Docker** — проверка нужных контейнеров и полный `docker ps -a`
+- **Автоотчёты** — по расписанию, краткие или развёрнутые
+- **Алерты** — пороги CPU / RAM / диск / load с кулдауном и mute
+- **Ребут** — уведомление при смене boot id
+- **Восстановление** — команда `/restart`: опциональный скрипт + `docker restart`
+
+Настраивается под хост: списки сервисов и контейнеров правятся в одном `config.yaml`.
+
+## Команды
+
+| Команда | Действие |
+|---|---|
+| `/status` | сводка: CPU, RAM, диск, сеть, сервисы |
+| `/report` | полный снимок сейчас |
+| `/network` | нагрузка сети по окнам |
+| `/processes` | топ процессов |
+| `/docker` | `docker ps -a` |
+| `/services` | статусы systemd |
+| `/reboot_info` | boot time, uptime, boot id |
+| `/interval 24h` | частота автоотчётов |
+| `/remind short` / `full` | формат автонапоминания |
+| `/restart` | скрипт + перезапуск контейнеров из списка |
+| `/mute 1h` / `/unmute` | алерты |
+| `/help` / `/help full` | справка |
+
+## Конфиг
+
+Два файла:
+
+| Файл | Что внутри |
+|---|---|
+| `.env` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| `config.yaml` | контейнеры, сервисы, пороги, интервалы |
+
+Приоритет: env / `.env` → `config.yaml` → значения по умолчанию.
+
+```yaml
+watch:
+  services: [docker, ssh, nginx]
+  containers: [nginx, postgres, redis]
+
+alerts:
+  cpu: 85
+  ram: 90
+  disk: 90
+  load: 2.0
+```
+
+Полный шаблон: [`config.example.yaml`](config.example.yaml).
+
+## Развёртывание
+
+Нужен Linux с systemd; Docker — по желанию. Go на сервере не обязателен.
+
+### Из релиза
+
+1. Скачайте бинарник и архив конфигов с [Releases](https://github.com/HACER777BEBRA/hostpulse/releases) (`linux-amd64` или `linux-arm64`).
+2. Распакуйте, скопируйте примеры: `.env.example` → `.env`, `config.example.yaml` → `config.yaml`.
+3. Заполните токен/chat id и списки в `config.yaml`.
+4. Установите:
 
 ```bash
-# скачайте hostpulse-*-linux-*.tar.gz и hostpulse-*-config.tar.gz, распакуйте
-cp .env.example .env && cp config.example.yaml config.yaml
-nano .env            # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-nano config.yaml     # watch.containers, watch.services
-
 sudo mkdir -p /opt/hostpulse /var/lib/hostpulse
 sudo cp hostpulse .env config.yaml /opt/hostpulse/
 sudo chmod 600 /opt/hostpulse/.env
@@ -19,83 +78,15 @@ sudo cp hostpulse.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now hostpulse
 ```
 
-Пример `config.yaml`:
+Дальше правки — в `/opt/hostpulse/config.yaml`, затем `sudo systemctl restart hostpulse`.
 
-```yaml
-watch:
-  services: [docker, ssh, nginx]
-  containers: [nginx, postgres, redis]
-```
-
-## Сборка из исходников
+### Из исходников
 
 ```bash
 git clone https://github.com/HACER777BEBRA/hostpulse.git
-cd hostpulse
-bash scripts/setup.sh
-make test && make build   # или: make build-linux / make install
+cd hostpulse && bash scripts/setup.sh
+make test && make build    # или make build-linux / make install
 ./hostpulse .env
 ```
 
-На Windows для локального теста: `STATE_FILE=./state.json`.
-
-## Команды Telegram
-
-| Команда | Что делает |
-|---|---|
-| `/status` | CPU, RAM, диск, сеть, сервисы |
-| `/network` | нагрузка ↓↑ сейчас / 1 мин / 15 мин / 1 час |
-| `/processes` | топ процессов по CPU и RAM |
-| `/docker` | `docker ps -a` |
-| `/services` | статусы systemd из `watch.services` |
-| `/reboot_info` | boot time, uptime, boot id |
-| `/report` | полный отчёт |
-| `/interval 24h` | частота автоотчётов |
-| `/restart` | опциональный скрипт + `docker restart` контейнеров из списка |
-| `/mute 1h` | выключить алерты |
-| `/unmute` | включить алерты |
-| `/help` | средняя справка |
-| `/help full` | развёрнутая справка |
-| `/remind` / `/remind short` / `/remind full` | формат автонапоминания |
-
-Имя команды `/restart` меняется через `restart.command` в YAML (алиасы `/restart` и `/restart_amnezia` тоже принимаются).
-
-## Конфигурация
-
-Приоритет: **переменные окружения / `.env` > `config.yaml` > значения по умолчанию**.
-
-Секреты лучше держать в `.env`, списки и пороги — в `config.yaml` (его удобно копировать на другой хост и править).
-
-| Ключ YAML / env | Смысл |
-|---|---|
-| `watch.services` / `WATCH_SERVICES` | systemd-юниты (список или CSV) |
-| `watch.containers` / `WATCH_CONTAINERS` | docker-контейнеры |
-| `restart.script` / `RESTART_SCRIPT` | скрипт перед `docker restart` (пусто = пропуск) |
-| `restart.command` / `RESTART_COMMAND` | имя команды в Telegram |
-| `alerts.*` / `CPU_ALERT` … | пороги алертов |
-| `report_interval` / `REPORT_INTERVAL` | период автоотчёта |
-| `paths.state_file` / `STATE_FILE` | файл состояния |
-| `CONFIG_FILE` | путь к YAML, если не рядом с `.env` |
-
-Полный шаблон: [`config.example.yaml`](config.example.yaml).
-
-## Структура
-
-```
-cmd/monitor       точка входа
-internal/config   .env + config.yaml
-internal/telegram Bot API
-internal/metrics  CPU/RAM/диск/процессы
-internal/netload  скорость сети
-internal/health   systemd + docker
-internal/reboot   boot id
-internal/state    mute / cooldown / interval
-internal/monitor  команды и циклы
-deploy/           systemd unit
-scripts/          setup на новом хосте
-```
-
-## Требования
-
-- Go 1.22+
-- Linux-сервер с systemd (для мониторинга сервисов) и при желании Docker
+Для локального теста на Windows: `STATE_FILE=./state.json`.
