@@ -2,58 +2,42 @@
 
 Telegram-бот мониторинга Linux-сервера: CPU, RAM, диск, load, сеть, systemd и Docker. Периодические отчёты, алерты по порогам и уведомление о ребуте.
 
-## Быстрый старт на новом ПК / сервере
+## Установка
+
+Готовые бинарники (linux amd64/arm64) и примеры конфигов: [Releases](https://github.com/HACER777BEBRA/hostpulse/releases). Go на сервере не нужен.
+
+```bash
+# скачайте hostpulse-*-linux-*.tar.gz и hostpulse-*-config.tar.gz, распакуйте
+cp .env.example .env && cp config.example.yaml config.yaml
+nano .env            # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+nano config.yaml     # watch.containers, watch.services
+
+sudo mkdir -p /opt/hostpulse /var/lib/hostpulse
+sudo cp hostpulse .env config.yaml /opt/hostpulse/
+sudo chmod 600 /opt/hostpulse/.env
+sudo cp hostpulse.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now hostpulse
+```
+
+Пример `config.yaml`:
+
+```yaml
+watch:
+  services: [docker, ssh, nginx]
+  containers: [nginx, postgres, redis]
+```
+
+## Сборка из исходников
 
 ```bash
 git clone https://github.com/HACER777BEBRA/hostpulse.git
 cd hostpulse
 bash scripts/setup.sh
-```
-
-Скрипт создаст локальные файлы из примеров:
-
-| Файл | Назначение |
-|---|---|
-| `.env` | секреты Telegram |
-| `config.yaml` | списки контейнеров/сервисов, пороги, скрипт restart |
-
-Отредактируйте под хост:
-
-```bash
-nano .env              # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-nano config.yaml       # watch.containers, watch.services
-```
-
-Пример списка контейнеров в `config.yaml`:
-
-```yaml
-watch:
-  services:
-    - docker
-    - ssh
-    - nginx
-  containers:
-    - nginx
-    - postgres
-    - redis
-```
-
-Сборка и установка:
-
-```bash
-make test
-make build            # локальный бинарник ./hostpulse
-make build-linux      # кросс-сборка с Windows/macOS → hostpulse-linux
-make install          # Linux: /opt/hostpulse + systemd
-```
-
-Запуск без systemd:
-
-```bash
+make test && make build   # или: make build-linux / make install
 ./hostpulse .env
 ```
 
-На Windows для локального теста в `config.yaml` или `.env` поставьте `paths.state_file: ./state.json` / `STATE_FILE=./state.json`.
+На Windows для локального теста: `STATE_FILE=./state.json`.
 
 ## Команды Telegram
 
