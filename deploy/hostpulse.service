@@ -1,0 +1,20 @@
+[Unit]
+Description=HostPulse — host metrics to Telegram
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/hostpulse
+EnvironmentFile=/opt/hostpulse/.env
+# Optional absolute path if config is not next to the binary cwd:
+# Environment=CONFIG_FILE=/opt/hostpulse/config.yaml
+ExecStart=/opt/hostpulse/hostpulse /opt/hostpulse/.env
+Restart=always
+RestartSec=5
+Nice=10
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

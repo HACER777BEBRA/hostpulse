@@ -1,0 +1,44 @@
+# HostPulse — machine config (copy to config.yaml and edit)
+#
+# Secrets can stay in .env (recommended). Values from environment
+# always override this file, so one YAML can be shared across hosts.
+
+report_interval: 24h
+check_interval: 60s
+report_style: full   # full | short
+
+alerts:
+  cpu: 85
+  ram: 90
+  disk: 90
+  load: 2.0
+  cooldown: 15m
+
+# Edit these lists for the target host — one item per line.
+watch:
+  services:
+    - docker
+    - ssh
+    # - fail2ban
+    # - nginx
+  containers:
+    # - nginx
+    # - postgres
+    # - amnezia-awg2
+
+# /restart in Telegram: optional host script, then docker restart of watch.containers
+restart:
+  command: restart          # telegram command without /
+  script: ""                # e.g. /usr/local/bin/ensure-vpn.sh  (empty = skip)
+
+paths:
+  state_file: /var/lib/hostpulse/state.json
+  disk: /
+
+hostname: ""                # empty = OS hostname
+net_iface: auto             # or eth0 / ens3 / ...
+
+# Optional (prefer .env for secrets):
+# telegram:
+#   bot_token: ""
+#   chat_id: 0
