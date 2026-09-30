@@ -82,12 +82,50 @@ func (c *Client) Send(text string) error {
 }
 
 func (c *Client) SendTo(chatID int64, text string) error {
+	_, err := c.SendMessage(chatID, text)
+	return err
+}
+
+func (c *Client) SendMessage(chatID int64, text string) (int, error) {
 	form := url.Values{}
 	form.Set("chat_id", strconv.FormatInt(chatID, 10))
 	form.Set("text", text)
 	form.Set("parse_mode", "HTML")
 	form.Set("disable_web_page_preview", "true")
-	_, err := c.post("sendMessage", form)
+	body, err := c.post("sendMessage", form)
+	if err != nil {
+		return 0, c.wrapErr(err)
+	}
+	var parsed struct {
+		Result struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, err
+	}
+	if parsed.Result.MessageID == 0 {
+		return 0, fmt.Errorf("telegram sendMessage: empty message_id")
+	}
+	return parsed.Result.MessageID, nil
+}
+
+func (c *Client) DeleteMessage(chatID int64, messageID int) error {
+	form := url.Values{}
+	form.Set("chat_id", strconv.FormatInt(chatID, 10))
+	form.Set("message_id", strconv.Itoa(messageID))
+	_, err := c.post("deleteMessage", form)
+	return c.wrapErr(err)
+}
+
+func (c *Client) EditMessage(chatID int64, messageID int, text string) error {
+	form := url.Values{}
+	form.Set("chat_id", strconv.FormatInt(chatID, 10))
+	form.Set("message_id", strconv.Itoa(messageID))
+	form.Set("text", text)
+	form.Set("parse_mode", "HTML")
+	form.Set("disable_web_page_preview", "true")
+	_, err := c.post("editMessageText", form)
 	return c.wrapErr(err)
 }
 

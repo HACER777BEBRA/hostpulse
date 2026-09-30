@@ -21,6 +21,10 @@ type fakeTG struct {
 	members   map[int64]bool
 	memberOf  map[int64]map[int64]bool
 	memberErr error
+	nextID    int
+	edits     []string
+	editErr   error
+	deleted   [][2]int64
 }
 
 func (f *fakeTG) Send(text string) error {
@@ -32,6 +36,23 @@ func (f *fakeTG) SendTo(chatID int64, text string) error {
 	f.sent = append(f.sent, text)
 	f.sentTo = append(f.sentTo, chatID)
 	return f.sendErr
+}
+func (f *fakeTG) SendMessage(chatID int64, text string) (int, error) {
+	f.sent = append(f.sent, text)
+	f.sentTo = append(f.sentTo, chatID)
+	if f.sendErr != nil {
+		return 0, f.sendErr
+	}
+	f.nextID++
+	return f.nextID, nil
+}
+func (f *fakeTG) EditMessage(chatID int64, messageID int, text string) error {
+	f.edits = append(f.edits, text)
+	return f.editErr
+}
+func (f *fakeTG) DeleteMessage(chatID int64, messageID int) error {
+	f.deleted = append(f.deleted, [2]int64{chatID, int64(messageID)})
+	return nil
 }
 func (f *fakeTG) GetUpdates(offset int) ([]telegram.Update, error) {
 	return f.updates, nil

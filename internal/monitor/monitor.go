@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"hostpulse/internal/config"
@@ -20,6 +21,9 @@ import (
 type Sender interface {
 	Send(text string) error
 	SendTo(chatID int64, text string) error
+	SendMessage(chatID int64, text string) (int, error)
+	EditMessage(chatID int64, messageID int, text string) error
+	DeleteMessage(chatID int64, messageID int) error
 	GetUpdates(offset int) ([]telegram.Update, error)
 	AllowedChat(id int64) bool
 	IsMember(chatID, userID int64) (bool, error)
@@ -35,6 +39,9 @@ type App struct {
 	// replyTo is the chat that asked for the command currently running.
 	// Only the poll goroutine reads and writes it.
 	replyTo int64
+	baseCtx context.Context
+	liveMu  sync.Mutex
+	lives   map[int64]*liveRun
 }
 
 func New(cfg config.Config, tg Sender, store *state.Store, net *netload.Sampler) *App {
@@ -82,6 +89,8 @@ func (a *App) OnStop() {
 }
 
 func (a *App) Run(ctx context.Context) {
+	a.baseCtx = ctx
+	defer a.stopLive()
 	a.Start(ctx)
 	check := time.NewTicker(a.cfg.CheckInterval)
 	defer check.Stop()
@@ -104,6 +113,7 @@ func (a *App) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			a.stopLive()
 			a.OnStop()
 			return
 		case <-check.C:
@@ -344,6 +354,8 @@ func (a *App) HandleCommand(text string) {
 		a.cmdInterval(parts[1:])
 	case "/remind":
 		a.cmdRemind(parts[1:])
+	case "/live":
+		a.cmdLive(parts[1:])
 	default:
 		if a.isRestartCommand(cmd) {
 			a.cmdRestart()
