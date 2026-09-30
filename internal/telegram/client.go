@@ -1,9 +1,11 @@
 package telegram
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,6 +17,8 @@ type Client struct {
 	token      string
 	chatID     int64
 	httpClient *http.Client
+	transport  *http.Transport
+	stacks     *stackPreference
 }
 
 type Update struct {
@@ -39,13 +43,34 @@ type apiResp struct {
 }
 
 func New(token string, chatID int64) *Client {
+	stacks := &stackPreference{}
+	httpClient, transport := newHTTPClient(stacks)
 	return &Client{
-		token:  token,
-		chatID: chatID,
-		httpClient: &http.Client{
-			Timeout: 40 * time.Second,
-		},
+		token:      token,
+		chatID:     chatID,
+		httpClient: httpClient,
+		transport:  transport,
+		stacks:     stacks,
 	}
+}
+
+func newHTTPClient(stacks *stackPreference) (*http.Client, *http.Transport) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || stacks == nil {
+		return &http.Client{Timeout: 40 * time.Second}, nil
+	}
+	transport := base.Clone()
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return stacks.dial(ctx, dialer, addr)
+	}
+	return &http.Client{
+		Timeout:   40 * time.Second,
+		Transport: transport,
+	}, transport
 }
 
 func (c *Client) AllowedChat(id int64) bool {
@@ -85,7 +110,7 @@ func (c *Client) get(method string, q url.Values, dest *apiResp) error {
 	if err != nil {
 		return err
 	}
-	res, err := c.httpClient.Do(req)
+	res, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -107,7 +132,7 @@ func (c *Client) post(method string, form url.Values) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	res, err := c.httpClient.Do(req)
+	res, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +152,49 @@ func (c *Client) post(method string, form url.Values) ([]byte, error) {
 		return body, fmt.Errorf("%s", parsed.Desc)
 	}
 	return body, nil
+}
+
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	res, err := c.httpClient.Do(req)
+	if err == nil || !isTransportFailure(err) {
+		return res, err
+	}
+	c.noteFailure(err)
+	retry, rerr := retryRequest(req)
+	if rerr != nil {
+		return nil, err
+	}
+	res, err2 := c.httpClient.Do(retry)
+	if err2 != nil {
+		c.noteFailure(err2)
+		return nil, err2
+	}
+	return res, nil
+}
+
+func (c *Client) noteFailure(err error) {
+	if c.stacks != nil {
+		c.stacks.noteTransportErr(err)
+	}
+	if c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
+}
+
+func retryRequest(req *http.Request) (*http.Request, error) {
+	clone := req.Clone(req.Context())
+	if req.Body == nil || req.Body == http.NoBody {
+		return clone, nil
+	}
+	if req.GetBody == nil {
+		return nil, fmt.Errorf("cannot retry request body")
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	clone.Body = body
+	return clone, nil
 }
 
 func (c *Client) wrapErr(err error) error {
