@@ -33,6 +33,12 @@ type Config struct {
 	RestartScript string
 	// Telegram command without leading slash, e.g. "restart" or "restart_amnezia".
 	RestartCommand string
+	// User ids answered in DM and inside CommandGroups.
+	AllowedUsers []int64
+	// Groups where only AllowedUsers and members of MemberGroups get a reply.
+	CommandGroups []int64
+	// Groups whose current members are answered in the group and in DM.
+	MemberGroups []int64
 }
 
 type fileConfig struct {
@@ -62,6 +68,12 @@ type fileConfig struct {
 		Command string `yaml:"command"`
 		Script  string `yaml:"script"`
 	} `yaml:"restart"`
+
+	Access struct {
+		Users         []int64 `yaml:"users"`
+		CommandGroups []int64 `yaml:"command_groups"`
+		MemberGroups  []int64 `yaml:"member_groups"`
+	} `yaml:"access"`
 
 	Paths struct {
 		StateFile string `yaml:"state_file"`
@@ -110,6 +122,9 @@ func Load(envPath string) (Config, error) {
 
 	// Re-apply env after YAML so machine-specific overrides win.
 	overlayEnv(&cfg)
+	if err := applyAccessEnv(&cfg); err != nil {
+		return Config{}, err
+	}
 
 	if cfg.CheckInterval < time.Second {
 		cfg.CheckInterval = time.Second
@@ -230,6 +245,15 @@ func applyYAML(cfg *Config, yc fileConfig) {
 	if yc.NetIface != "" {
 		cfg.NetIface = strings.TrimSpace(yc.NetIface)
 	}
+	if yc.Access.Users != nil {
+		cfg.AllowedUsers = dedupeIDs(yc.Access.Users)
+	}
+	if yc.Access.CommandGroups != nil {
+		cfg.CommandGroups = dedupeIDs(yc.Access.CommandGroups)
+	}
+	if yc.Access.MemberGroups != nil {
+		cfg.MemberGroups = dedupeIDs(yc.Access.MemberGroups)
+	}
 }
 
 func overlayEnv(cfg *Config) {
@@ -300,6 +324,31 @@ func overlayEnv(cfg *Config) {
 	}
 }
 
+func applyAccessEnv(cfg *Config) error {
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_ALLOWED_USERS")); v != "" {
+		ids, err := parseIDs(csvEnv("TELEGRAM_ALLOWED_USERS"))
+		if err != nil {
+			return fmt.Errorf("TELEGRAM_ALLOWED_USERS: %w", err)
+		}
+		cfg.AllowedUsers = ids
+	}
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_COMMAND_GROUPS")); v != "" {
+		ids, err := parseIDs(csvEnv("TELEGRAM_COMMAND_GROUPS"))
+		if err != nil {
+			return fmt.Errorf("TELEGRAM_COMMAND_GROUPS: %w", err)
+		}
+		cfg.CommandGroups = ids
+	}
+	if v := strings.TrimSpace(os.Getenv("TELEGRAM_MEMBER_GROUPS")); v != "" {
+		ids, err := parseIDs(csvEnv("TELEGRAM_MEMBER_GROUPS"))
+		if err != nil {
+			return fmt.Errorf("TELEGRAM_MEMBER_GROUPS: %w", err)
+		}
+		cfg.MemberGroups = ids
+	}
+	return nil
+}
+
 func normalizeRestartCommand(raw string) string {
 	s := strings.TrimSpace(raw)
 	s = strings.TrimPrefix(s, "/")
@@ -360,6 +409,31 @@ func durEnv(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func dedupeIDs(in []int64) []int64 {
+	out := make([]int64, 0, len(in))
+	seen := map[int64]bool{}
+	for _, id := range in {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+func parseIDs(parts []string) ([]int64, error) {
+	raw := make([]int64, 0, len(parts))
+	for _, p := range parts {
+		id, err := strconv.ParseInt(strings.TrimSpace(p), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", p, err)
+		}
+		raw = append(raw, id)
+	}
+	return dedupeIDs(raw), nil
 }
 
 func csvEnv(key string) []string {

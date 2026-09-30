@@ -78,13 +78,66 @@ func (c *Client) AllowedChat(id int64) bool {
 }
 
 func (c *Client) Send(text string) error {
+	return c.SendTo(c.chatID, text)
+}
+
+func (c *Client) SendTo(chatID int64, text string) error {
 	form := url.Values{}
-	form.Set("chat_id", strconv.FormatInt(c.chatID, 10))
+	form.Set("chat_id", strconv.FormatInt(chatID, 10))
 	form.Set("text", text)
 	form.Set("parse_mode", "HTML")
 	form.Set("disable_web_page_preview", "true")
 	_, err := c.post("sendMessage", form)
 	return c.wrapErr(err)
+}
+
+// IsMember reports whether userID belongs to chatID. Private commands are
+// allowed for people who are still in the configured monitoring chat.
+func (c *Client) IsMember(chatID, userID int64) (bool, error) {
+	q := url.Values{}
+	q.Set("chat_id", strconv.FormatInt(chatID, 10))
+	q.Set("user_id", strconv.FormatInt(userID, 10))
+	u := fmt.Sprintf("https://api.telegram.org/bot%s/getChatMember?%s", c.token, q.Encode())
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return false, err
+	}
+	res, err := c.do(req)
+	if err != nil {
+		return false, c.wrapErr(err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return false, err
+	}
+	var parsed struct {
+		OK     bool   `json:"ok"`
+		Desc   string `json:"description"`
+		Result struct {
+			Status string `json:"status"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false, err
+	}
+	if !parsed.OK {
+		desc := strings.ToLower(parsed.Desc)
+		if strings.Contains(desc, "user not found") || strings.Contains(desc, "not a member") || strings.Contains(desc, "user_not_participant") {
+			return false, nil
+		}
+		return false, fmt.Errorf("%s", parsed.Desc)
+	}
+	return memberStatusAllowed(parsed.Result.Status), nil
+}
+
+func memberStatusAllowed(status string) bool {
+	switch status {
+	case "creator", "administrator", "member", "restricted":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) GetUpdates(offset int) ([]Update, error) {

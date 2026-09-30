@@ -42,3 +42,11 @@ net_iface: auto             # or eth0 / ens3 / ...
 # telegram:
 #   bot_token: ""
 #   chat_id: 0
+
+# Who may run commands. Alerts and scheduled reports still go to TELEGRAM_CHAT_ID.
+# If users, command_groups and member_groups are all empty, a group chat_id
+# is treated as the only member group.
+access:
+  users: []              # user ids: answered in DM and in command_groups
+  command_groups: []     # groups where only the whitelist is answered
+  member_groups: []      # groups: any member is answered there and in DM

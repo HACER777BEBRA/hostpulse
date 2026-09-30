@@ -19,8 +19,10 @@ import (
 
 type Sender interface {
 	Send(text string) error
+	SendTo(chatID int64, text string) error
 	GetUpdates(offset int) ([]telegram.Update, error)
 	AllowedChat(id int64) bool
+	IsMember(chatID, userID int64) (bool, error)
 }
 
 type App struct {
@@ -30,6 +32,9 @@ type App struct {
 	net           *netload.Sampler
 	logf          func(string, ...any)
 	intervalReset chan struct{}
+	// replyTo is the chat that asked for the command currently running.
+	// Only the poll goroutine reads and writes it.
+	replyTo int64
 }
 
 func New(cfg config.Config, tg Sender, store *state.Store, net *netload.Sampler) *App {
@@ -139,10 +144,16 @@ func (a *App) pollCommands(ctx context.Context) {
 			if u.Message == nil || strings.TrimSpace(u.Message.Text) == "" {
 				continue
 			}
-			if !a.tg.AllowedChat(u.Message.Chat.ID) {
+			userID := int64(0)
+			if u.Message.From != nil {
+				userID = u.Message.From.ID
+			}
+			if !a.allowCommand(u.Message.Chat.ID, userID) {
 				continue
 			}
+			a.replyTo = u.Message.Chat.ID
 			a.HandleCommand(strings.TrimSpace(u.Message.Text))
+			a.replyTo = 0
 		}
 	}
 }
@@ -206,6 +217,96 @@ func (a *App) SendReport() bool {
 	return a.send("📊 <b>Отчёт о сервере</b>\n\n" + a.statusWithNetServices(true))
 }
 
+// allowCommand decides who may run a command and where the reply goes.
+// Member groups: any participant is answered in that group and in DM.
+// Command groups: only the whitelist (explicit user ids and members of
+// member groups). Other groups are ignored. A stranger in DM gets a refusal.
+func (a *App) allowCommand(chatID, userID int64) bool {
+	if a.inMemberGroup(chatID) {
+		return true
+	}
+	if containsID(a.cfg.CommandGroups, chatID) {
+		ok, err := a.whitelisted(userID)
+		if err != nil {
+			a.logf("whitelist: %v", err)
+			return false
+		}
+		return ok
+	}
+	if chatID > 0 {
+		if !a.accessConfigured() && a.tg.AllowedChat(chatID) {
+			return true
+		}
+		ok, err := a.whitelisted(userID)
+		a.replyTo = chatID
+		defer func() { a.replyTo = 0 }()
+		if err != nil {
+			a.logf("whitelist: %v", err)
+			a.reply("Не удалось проверить доступ. Повторите команду.")
+			return false
+		}
+		if !ok {
+			a.reply("Команды в личке доступны только из белого списка.")
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func (a *App) accessConfigured() bool {
+	return len(a.cfg.AllowedUsers) > 0 || len(a.cfg.CommandGroups) > 0 || len(a.cfg.MemberGroups) > 0
+}
+
+func (a *App) effectiveMemberGroups() []int64 {
+	if a.accessConfigured() {
+		return a.cfg.MemberGroups
+	}
+	if a.cfg.ChatID < 0 {
+		return []int64{a.cfg.ChatID}
+	}
+	return nil
+}
+
+func (a *App) inMemberGroup(chatID int64) bool {
+	return containsID(a.effectiveMemberGroups(), chatID)
+}
+
+func (a *App) whitelisted(userID int64) (bool, error) {
+	if userID == 0 {
+		return false, nil
+	}
+	if containsID(a.cfg.AllowedUsers, userID) || (a.cfg.ChatID > 0 && userID == a.cfg.ChatID) {
+		return true, nil
+	}
+	var firstErr error
+	for _, group := range a.effectiveMemberGroups() {
+		ok, err := a.tg.IsMember(group, userID)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	if firstErr != nil {
+		return false, firstErr
+	}
+	return false, nil
+}
+
+func containsID(ids []int64, id int64) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) HandleCommand(text string) {
 	parts := strings.Fields(text)
 	if len(parts) == 0 {
@@ -218,27 +319,27 @@ func (a *App) HandleCommand(text string) {
 	case "/help_full":
 		a.cmdHelp([]string{"full"})
 	case "/status":
-		a.send(a.statusWithNetServices(false))
+		a.reply(a.statusWithNetServices(false))
 	case "/report":
-		a.send("📊 <b>Отчёт о сервере</b>\n\n" + a.statusWithNetServices(true))
+		a.reply("📊 <b>Отчёт о сервере</b>\n\n" + a.statusWithNetServices(true))
 	case "/network":
-		a.send(a.net.Snapshot().Format())
+		a.reply(a.net.Snapshot().Format())
 	case "/processes":
-		a.send(metrics.Collect(a.cfg.Hostname, a.cfg.DiskPath, true).FormatProcesses())
+		a.reply(metrics.Collect(a.cfg.Hostname, a.cfg.DiskPath, true).FormatProcesses())
 	case "/docker":
-		a.send(health.FormatDockerPS())
+		a.reply(health.FormatDockerPS())
 	case "/services":
-		a.send(health.Check(a.cfg.WatchServices, nil).FormatServicesOnly())
+		a.reply(health.Check(a.cfg.WatchServices, nil).FormatServicesOnly())
 	case "/reboot_info":
 		a.cmdRebootInfo()
 	case "/mute":
 		a.cmdMute(parts[1:])
 	case "/unmute":
 		if err := a.store.Unmute(); err != nil {
-			a.send("❌ " + metrics.Escape(err.Error()))
+			a.reply("❌ " + metrics.Escape(err.Error()))
 			return
 		}
-		a.send("🔔 Алерты снова включены")
+		a.reply("🔔 Алерты снова включены")
 	case "/interval":
 		a.cmdInterval(parts[1:])
 	case "/remind":
@@ -248,7 +349,7 @@ func (a *App) HandleCommand(text string) {
 			a.cmdRestart()
 			return
 		}
-		a.send("Неизвестная команда. /help или /help full")
+		a.reply("Неизвестная команда. /help или /help full")
 	}
 }
 
@@ -280,7 +381,7 @@ func (a *App) cmdRebootInfo() {
 		id = info.BootID
 	}
 	fmt.Fprintf(&b, "🆔 BootID в state: <code>%s</code>", metrics.Escape(id))
-	a.send(b.String())
+	a.reply(b.String())
 }
 
 func (a *App) cmdRestart() {
@@ -288,30 +389,30 @@ func (a *App) cmdRestart() {
 		out, err := health.RunScript(script)
 		label := filepathBase(script)
 		if err != nil {
-			a.send("❌ " + metrics.Escape(label) + ": " + metrics.Escape(err.Error()))
+			a.reply("❌ " + metrics.Escape(label) + ": " + metrics.Escape(err.Error()))
 		} else {
 			body := strings.TrimSpace(out)
 			if body == "" {
 				body = "OK"
 			}
-			a.send("✅ " + metrics.Escape(label) + ":\n<pre>" + health.EscapePre(body) + "</pre>")
+			a.reply("✅ " + metrics.Escape(label) + ":\n<pre>" + health.EscapePre(body) + "</pre>")
 		}
 	}
 	if len(a.cfg.WatchContainers) == 0 && strings.TrimSpace(a.cfg.RestartScript) == "" {
-		a.send("Нечего перезапускать: задайте <code>watch.containers</code> и/или <code>restart.script</code> в config.yaml")
+		a.reply("Нечего перезапускать: задайте <code>watch.containers</code> и/или <code>restart.script</code> в config.yaml")
 		return
 	}
 	for _, name := range a.cfg.WatchContainers {
 		out, err := health.RestartContainer(name)
 		if err != nil {
-			a.send("❌ docker restart <code>" + metrics.Escape(name) + "</code>: " + metrics.Escape(err.Error()))
+			a.reply("❌ docker restart <code>" + metrics.Escape(name) + "</code>: " + metrics.Escape(err.Error()))
 			continue
 		}
 		body := strings.TrimSpace(out)
 		if body == "" {
 			body = name
 		}
-		a.send("✅ Контейнер перезапущен:\n<pre>" + health.EscapePre(body) + "</pre>")
+		a.reply("✅ Контейнер перезапущен:\n<pre>" + health.EscapePre(body) + "</pre>")
 	}
 }
 
@@ -330,20 +431,20 @@ func (a *App) cmdMute(args []string) {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil || d <= 0 {
-		a.send("Укажите длительность: <code>/mute 1h</code>, <code>/mute 30m</code>")
+		a.reply("Укажите длительность: <code>/mute 1h</code>, <code>/mute 30m</code>")
 		return
 	}
 	if err := a.store.Mute(time.Now().Add(d)); err != nil {
-		a.send("❌ " + metrics.Escape(err.Error()))
+		a.reply("❌ " + metrics.Escape(err.Error()))
 		return
 	}
-	a.send(fmt.Sprintf("🔇 Алерты выключены на %s", d.Round(time.Second)))
+	a.reply(fmt.Sprintf("🔇 Алерты выключены на %s", d.Round(time.Second)))
 }
 
 func (a *App) cmdInterval(args []string) {
 	if len(args) == 0 {
 		d := a.reportInterval()
-		a.send(fmt.Sprintf(
+		a.reply(fmt.Sprintf(
 			"⏱ Периодический отчёт: каждые <code>%s</code>\nСледующий примерно через <code>%s</code>\n\nЧтобы сменить: <code>/interval 24h</code>, <code>/interval 48h</code> или <code>/interval 12</code> (часы).",
 			formatInterval(d), formatInterval(a.timeUntilReport()),
 		))
@@ -351,19 +452,19 @@ func (a *App) cmdInterval(args []string) {
 	}
 	d, err := parseInterval(args[0])
 	if err != nil {
-		a.send("Укажите интервал: <code>/interval 24h</code>, <code>/interval 48h</code> или число часов, например <code>/interval 12</code>")
+		a.reply("Укажите интервал: <code>/interval 24h</code>, <code>/interval 48h</code> или число часов, например <code>/interval 12</code>")
 		return
 	}
 	if err := a.store.SetReportInterval(d); err != nil {
-		a.send("❌ " + metrics.Escape(err.Error()))
+		a.reply("❌ " + metrics.Escape(err.Error()))
 		return
 	}
 	if err := a.store.SetLastReportAt(time.Now().UTC()); err != nil {
-		a.send("❌ " + metrics.Escape(err.Error()))
+		a.reply("❌ " + metrics.Escape(err.Error()))
 		return
 	}
 	a.notifyIntervalReset()
-	a.send(fmt.Sprintf("⏱ Периодический отчёт теперь каждые <code>%s</code>\nСледующий — через <code>%s</code>", formatInterval(d), formatInterval(d)))
+	a.reply(fmt.Sprintf("⏱ Периодический отчёт теперь каждые <code>%s</code>\nСледующий — через <code>%s</code>", formatInterval(d), formatInterval(d)))
 }
 
 func (a *App) reportInterval() time.Duration {
@@ -458,10 +559,28 @@ func (a *App) formatReboot(prev state.File, info reboot.Info) string {
 }
 
 func (a *App) send(text string) bool {
+	return a.sendTo(a.cfg.ChatID, text)
+}
+
+func (a *App) reply(text string) bool {
+	chat := a.replyTo
+	if chat == 0 {
+		chat = a.cfg.ChatID
+	}
+	return a.sendTo(chat, text)
+}
+
+func (a *App) sendTo(chat int64, text string) bool {
 	if strings.TrimSpace(text) == "" {
 		return true
 	}
-	if err := a.tg.Send(text); err != nil {
+	var err error
+	if chat == 0 || chat == a.cfg.ChatID {
+		err = a.tg.Send(text)
+	} else {
+		err = a.tg.SendTo(chat, text)
+	}
+	if err != nil {
 		a.logf("send: %v", err)
 		return false
 	}

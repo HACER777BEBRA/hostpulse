@@ -9,6 +9,19 @@ import (
 	"time"
 )
 
+func TestMemberStatusAllowed(t *testing.T) {
+	for _, status := range []string{"creator", "administrator", "member", "restricted"} {
+		if !memberStatusAllowed(status) {
+			t.Fatalf("%s should be allowed", status)
+		}
+	}
+	for _, status := range []string{"left", "kicked", ""} {
+		if memberStatusAllowed(status) {
+			t.Fatalf("%s should be refused", status)
+		}
+	}
+}
+
 func TestRedactToken(t *testing.T) {
 	c := New("SECRETTOKEN", 1)
 	err := c.wrapErr(fmtErr("Get https://api.telegram.org/botSECRETTOKEN/getUpdates: reset"))

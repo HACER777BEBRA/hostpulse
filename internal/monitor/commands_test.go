@@ -13,20 +13,39 @@ import (
 )
 
 type fakeTG struct {
-	sent    []string
-	allowed int64
-	updates []telegram.Update
-	sendErr error
+	sent      []string
+	sentTo    []int64
+	allowed   int64
+	updates   []telegram.Update
+	sendErr   error
+	members   map[int64]bool
+	memberOf  map[int64]map[int64]bool
+	memberErr error
 }
 
 func (f *fakeTG) Send(text string) error {
 	f.sent = append(f.sent, text)
+	f.sentTo = append(f.sentTo, 0)
+	return f.sendErr
+}
+func (f *fakeTG) SendTo(chatID int64, text string) error {
+	f.sent = append(f.sent, text)
+	f.sentTo = append(f.sentTo, chatID)
 	return f.sendErr
 }
 func (f *fakeTG) GetUpdates(offset int) ([]telegram.Update, error) {
 	return f.updates, nil
 }
 func (f *fakeTG) AllowedChat(id int64) bool { return id == f.allowed }
+func (f *fakeTG) IsMember(chatID, userID int64) (bool, error) {
+	if f.memberErr != nil {
+		return false, f.memberErr
+	}
+	if f.memberOf != nil {
+		return f.memberOf[chatID][userID], nil
+	}
+	return f.members[userID], nil
+}
 
 func newTestApp(t *testing.T, tg *fakeTG) *App {
 	t.Helper()
@@ -45,6 +64,89 @@ func newTestApp(t *testing.T, tg *fakeTG) *App {
 	}
 	tg.allowed = 42
 	return New(cfg, tg, st, netload.New("net0"))
+}
+
+func TestPrivateCommandRepliesInDM(t *testing.T) {
+	tg := &fakeTG{members: map[int64]bool{7: true}}
+	app := newTestApp(t, tg)
+	app.cfg.ChatID = -10042
+	tg.allowed = -10042
+	if !app.allowCommand(99, 7) {
+		t.Fatal("group member was rejected in DM")
+	}
+	app.replyTo = 99
+	app.HandleCommand("/help")
+	if len(tg.sentTo) == 0 || tg.sentTo[len(tg.sentTo)-1] != 99 {
+		t.Fatalf("reply went to %v", tg.sentTo)
+	}
+}
+
+func TestPrivateStrangerIsRefusedInDM(t *testing.T) {
+	tg := &fakeTG{}
+	app := newTestApp(t, tg)
+	app.cfg.ChatID = -10042
+	tg.allowed = -10042
+	if app.allowCommand(99, 8) {
+		t.Fatal("stranger was allowed")
+	}
+	if len(tg.sentTo) != 1 || tg.sentTo[0] != 99 {
+		t.Fatalf("denial chat: %v", tg.sentTo)
+	}
+	if !strings.Contains(tg.sent[0], "белого списка") {
+		t.Fatalf("denial text: %q", tg.sent[0])
+	}
+}
+
+func TestWhitelistRules(t *testing.T) {
+	const (
+		reportChat   = int64(-1001)
+		memberGroup  = int64(-1002)
+		commandGroup = int64(-1003)
+		otherGroup   = int64(-1004)
+		explicitUser = int64(5)
+		memberUser   = int64(7)
+		stranger     = int64(8)
+	)
+	tg := &fakeTG{memberOf: map[int64]map[int64]bool{
+		memberGroup: {memberUser: true},
+	}}
+	app := newTestApp(t, tg)
+	app.cfg.ChatID = reportChat
+	app.cfg.AllowedUsers = []int64{explicitUser}
+	app.cfg.CommandGroups = []int64{commandGroup}
+	app.cfg.MemberGroups = []int64{memberGroup}
+	tg.allowed = reportChat
+
+	if !app.allowCommand(99, explicitUser) {
+		t.Fatal("explicit user denied in DM")
+	}
+	if len(tg.sent) != 0 {
+		t.Fatalf("explicit DM should not send a refusal: %#v", tg.sent)
+	}
+	if !app.allowCommand(99, memberUser) {
+		t.Fatal("member-group user denied in DM")
+	}
+	if !app.allowCommand(memberGroup, stranger) {
+		t.Fatal("message inside a member group was rejected")
+	}
+	if !app.allowCommand(commandGroup, explicitUser) || !app.allowCommand(commandGroup, memberUser) {
+		t.Fatal("whitelist was rejected in a command group")
+	}
+	if app.allowCommand(commandGroup, stranger) {
+		t.Fatal("stranger was answered in a command group")
+	}
+	if len(tg.sent) != 0 {
+		t.Fatalf("group refusal must stay silent: %#v", tg.sent)
+	}
+	if app.allowCommand(otherGroup, explicitUser) || app.allowCommand(reportChat, explicitUser) {
+		t.Fatal("command accepted outside whitelist groups")
+	}
+	if app.allowCommand(99, stranger) {
+		t.Fatal("stranger DM was allowed")
+	}
+	if len(tg.sentTo) != 1 || tg.sentTo[0] != 99 {
+		t.Fatalf("stranger denial chat: %v", tg.sentTo)
+	}
 }
 
 func TestHelpMediumAndFull(t *testing.T) {

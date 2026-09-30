@@ -16,6 +16,7 @@ func clearConfigEnv(t *testing.T) {
 		"WATCH_SERVICES", "WATCH_CONTAINERS", "STATE_FILE", "DISK_PATH",
 		"HOSTNAME", "ALERT_COOLDOWN", "NET_IFACE",
 		"RESTART_SCRIPT", "RESTART_COMMAND",
+		"TELEGRAM_ALLOWED_USERS", "TELEGRAM_COMMAND_GROUPS", "TELEGRAM_MEMBER_GROUPS",
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")
@@ -130,6 +131,42 @@ func TestEnvOverridesYAML(t *testing.T) {
 	}
 	if len(cfg.WatchContainers) != 1 || cfg.WatchContainers[0] != "from-env" {
 		t.Fatalf("want env override, got %#v", cfg.WatchContainers)
+	}
+}
+
+func TestLoadAccessLists(t *testing.T) {
+	clearConfigEnv(t)
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	body := "TELEGRAM_BOT_TOKEN=t\nTELEGRAM_CHAT_ID=-1001\nTELEGRAM_ALLOWED_USERS=5,5,0\n"
+	if err := os.WriteFile(envPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := filepath.Join(dir, "config.yaml")
+	yamlBody := `
+access:
+  users: [9]
+  command_groups: [-1003]
+  member_groups: [-1002, -1002]
+`
+	if err := os.WriteFile(yamlPath, []byte(yamlBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AllowedUsers) != 1 || cfg.AllowedUsers[0] != 5 {
+		t.Fatalf("env users override yaml: %#v", cfg.AllowedUsers)
+	}
+	if len(cfg.CommandGroups) != 1 || cfg.CommandGroups[0] != -1003 {
+		t.Fatalf("command groups: %#v", cfg.CommandGroups)
+	}
+	if len(cfg.MemberGroups) != 1 || cfg.MemberGroups[0] != -1002 {
+		t.Fatalf("member groups: %#v", cfg.MemberGroups)
+	}
+	if cfg.ChatID != -1001 {
+		t.Fatalf("chat id changed: %d", cfg.ChatID)
 	}
 }
 

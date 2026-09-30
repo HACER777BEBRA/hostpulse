@@ -17,21 +17,21 @@ func (a *App) cmdHelp(args []string) {
 	if len(args) > 0 {
 		parsed, ok := parseHelpStyle(args[0])
 		if !ok {
-			a.send("Справка: <code>/help</code> (средняя) или <code>/help full</code> (развёрнутая)")
+			a.reply("Справка: <code>/help</code> (средняя) или <code>/help full</code> (развёрнутая)")
 			return
 		}
 		style = parsed
 	}
 	if style == helpStyleFull {
-		a.send(a.helpTextFull())
+		a.reply(a.helpTextFull())
 		return
 	}
-	a.send(a.helpTextMedium())
+	a.reply(a.helpTextMedium())
 }
 
 func (a *App) cmdRemind(args []string) {
 	if len(args) == 0 {
-		a.send(fmt.Sprintf(
+		a.reply(fmt.Sprintf(
 			"📬 Автонапоминание: <b>%s</b> формат каждые <code>%s</code>\n\nПереключить: <code>/remind short</code> или <code>/remind full</code>",
 			reportStyleName(a.reportStyle()), formatInterval(a.reportInterval()),
 		))
@@ -39,14 +39,14 @@ func (a *App) cmdRemind(args []string) {
 	}
 	style, ok := parseReportStyle(args[0])
 	if !ok {
-		a.send("Укажите формат: <code>/remind short</code> (краткая) или <code>/remind full</code> (развёрнутая)")
+		a.reply("Укажите формат: <code>/remind short</code> (краткая) или <code>/remind full</code> (развёрнутая)")
 		return
 	}
 	if err := a.store.SetReportStyle(style); err != nil {
-		a.send("❌ " + metrics.Escape(err.Error()))
+		a.reply("❌ " + metrics.Escape(err.Error()))
 		return
 	}
-	a.send(fmt.Sprintf("📬 Автонапоминание переключено на <b>%s</b> формат (каждые <code>%s</code>)",
+	a.reply(fmt.Sprintf("📬 Автонапоминание переключено на <b>%s</b> формат (каждые <code>%s</code>)",
 		reportStyleName(style), formatInterval(a.reportInterval())))
 }
 
